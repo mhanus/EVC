@@ -8,17 +8,6 @@
 
 namespace dolfin {
 
-  class PETScMatrixExt : public PETScMatrix
-  {
-      public:
-          PETScMatrixExt(boost::shared_ptr<dolfin::PETScMatrix> mat) : PETScMatrix(mat->mat()) {}
-
-          void diag(boost::shared_ptr<dolfin::PETScVector> vec) const;
-          std::size_t local_nnz() const;
-          std::size_t global_nnz() const;
-          void mult(const PETScVector& xx, PETScVector& yy) const;
-  };
-
   class COO
   {
     public:
@@ -50,11 +39,11 @@ namespace dolfin {
 
   class COO2 : public COO
   {
-      public:
-          COO2(const PETScMatrix& mat, int G, int gto, int gfrom, bool negate);
+    public:
+      COO2(const PETScMatrix& mat, int G, int gto, int gfrom, bool negate);
 
-      private:
-          void process_row(std::size_t row, int G, int gto, int gfrom, bool negate);
+    private:
+      void process_row(std::size_t row, int G, int gto, int gfrom, bool negate);
   };
 
 }

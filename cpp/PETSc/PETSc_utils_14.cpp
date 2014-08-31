@@ -5,70 +5,6 @@
 #include <dolfin/parameter/GlobalParameters.h>
 using namespace dolfin;
 
-void PETScMatrixExt::diag(std::shared_ptr<dolfin::PETScVector> vec) const
-{
-	Vec d = vec->vec();
-	assert(d);
-	MatGetDiagonal(_matA, d);
-}
-
-std::size_t PETScMatrixExt::local_nnz() const
-{
-	MatInfo info;
-	MatGetInfo(_matA, MAT_LOCAL, &info);
-	return std::size_t(info.nz_used);
-}
-
-std::size_t PETScMatrixExt::global_nnz() const
-{
-	MatInfo info;
-	MatGetInfo(_matA, MAT_GLOBAL_SUM, &info);
-	return std::size_t(info.nz_used);
-}
-
-/*
-void PETScMatrixExt::mult(const PETScVector& xx, PETScVector& yy) const
-{
-  dolfin_assert(_matA);
-
-  if (PETScBaseMatrix::size(1) != xx.size())
-  {
-    dolfin_error("PETSc_utils.cpp",
-                 "compute matrix-vector product with PETSc matrix",
-                 "Non-matching dimensions for matrix-vector product");
-  }
-
-  // Resize RHS if empty
-  if (yy.size() == 0)
-  	init_vector(yy, 0);
-
-  if (size(0) != yy.size())
-  {
-    dolfin_error("PETSc_utils.cpp",
-                 "compute matrix-vector product with PETSc matrix",
-                 "Vector for matrix-vector result has wrong size");
-  }
-
-  PetscErrorCode ierr = MatMult(_matA, xx.vec(), yy.vec());
-  if (ierr != 0) PETScObject::petsc_error(ierr, __FILE__, "MatMult");
-}
-*/
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 void COO::init(const PETScMatrix& mat)
 {
 	_matA = mat.mat();
@@ -125,19 +61,6 @@ void COO::process_row(std::size_t row)
 	ierr = MatRestoreRow(_matA, row, &ncols, &cols, &vals);
 	if (ierr != 0) PETScObject::petsc_error(ierr, "PETSc_utils.cpp", "MatRestoreRow");
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 COO2::COO2(const PETScMatrix& mat, int G, int gto, int gfrom, bool negate)
 {

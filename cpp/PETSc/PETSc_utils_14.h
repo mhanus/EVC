@@ -8,29 +8,18 @@
 
 namespace dolfin {
 
-	class PETScMatrixExt : public PETScMatrix
-	{
-		public:
-			PETScMatrixExt(std::shared_ptr<dolfin::PETScMatrix> mat) : PETScMatrix(mat->mat()) {}
-
-			void diag(std::shared_ptr<dolfin::PETScVector> vec) const;
-			std::size_t local_nnz() const;
-			std::size_t global_nnz() const;
-			//void mult(const PETScVector& xx, PETScVector& yy) const;
-	};
-
   class COO
   {
     public:
-	  COO() {};
-    COO(const PETScMatrix& mat);
-    COO(const PETScMatrix& mat, int N, int gto, int gfrom, bool negate);
+			COO() {};
+      COO(const PETScMatrix& mat);
+      COO(const PETScMatrix& mat, int N, int gto, int gfrom, bool negate);
 
-    std::vector<double> get_vals() const { return values; }
-    std::vector<int> get_cols() const { return columns; }
-    std::vector<int> get_rows() const { return rows; }
-    std::size_t get_local_nnz() const { return local_nnz; }
-    std::size_t get_local_nrows() const { return local_size; }
+			std::vector<double> get_vals() const { return values; }
+      std::vector<int> get_cols() const { return columns; }
+      std::vector<int> get_rows() const { return rows; }
+      std::size_t get_local_nnz() const { return local_nnz; }
+      std::size_t get_local_nrows() const { return local_size; }
 
     private:
       void process_row(std::size_t row);
@@ -49,13 +38,13 @@ namespace dolfin {
   };
 
   class COO2 : public COO
-	{
-		public:
-			COO2(const PETScMatrix& mat, int G, int gto, int gfrom, bool negate);
+  {
+    public:
+      COO2(const PETScMatrix& mat, int G, int gto, int gfrom, bool negate);
 
-		private:
-			void process_row(std::size_t row, int G, int gto, int gfrom, bool negate);
-	};
+    private:
+      void process_row(std::size_t row, int G, int gto, int gfrom, bool negate);
+  };
 
 }
 
