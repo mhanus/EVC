@@ -1,25 +1,34 @@
 from dolfin import Function, norm
+from dolfin.cpp.common import warning, Timer
 import numpy
 from dolfin.cpp.la import PETScVector, PETScMatrix, KrylovSolver, PETScOptions
 from dolfin.fem.interpolation import interpolate
 from matrix_utils import create_composite_matrix, split_dofs, condense_matrices
-from utils import MPI_sum0, comm, MPI_type
+from utils import MPI_sum0, comm, MPI_type, print0, pid
 from scipy.sparse.linalg import lobpcg, eigs, eigsh
+
+try:
+  from pyamg import smoothed_aggregation_solver
+  __py_amg_available__ = True
+except ImportError:
+  __py_amg_available__ = False
 
 __author__ = 'mhanus'
 
-class EVC(object):
+class EVCEigenvalueSolver(object):
   def __init__(self, problem,
-               coarse_level_tol=0, coarse_level_maxit=None, coarse_level_num_ritz_vec=None, coarse_level_verb=0,
-               use_lobpcg_if_symmetric=False):
+               coarse_level_tol=0, coarse_level_maxit=None, coarse_level_num_ritz_vec=None,
+               use_lobpcg_on_coarse_level=False, lobpcg_verb=0, precond_lobpcg_by_ml=False, update_lobpcg_prec=False,
+               verbosity=1):
     """
 
     :param Problem problem:
-    :param bool use_lobpcg_if_symmetric:
+    :param bool use_lobpcg_on_coarse_level:
     :return:
     """
 
     self.problem = problem
+    self.verbosity = verbosity
 
     self.sln_fine = Function(problem.V_fine)
     self.vec_fine = self.sln_fine.vector()
@@ -46,7 +55,7 @@ class EVC(object):
       self.indofs = numpy.s_[1:problem.ndof_coarse+1]
 
     if comm.rank == 0:
-      # Coarse level solution (without Dirichlet BC dofs). Will be set in each call to `solve_at_coarse_level`.
+      # Coarse level solution (without Dirichlet BC dofs). Will be set in each call to `solve_on_coarse_level`.
       self.v_coarse = numpy.empty((problem.ndof_coarse+1,1))
 
       # Set the final coarse level solution (including the Dirichlet BC dofs, if any)
@@ -66,12 +75,24 @@ class EVC(object):
     self.fs_param["relative_tolerance"] = 1e-6
 
     # Coarse level solver
-    self.use_lobpcg_if_sym = use_lobpcg_if_symmetric
+    self.use_lobpcg_on_coarse_level = use_lobpcg_on_coarse_level
     self.coarse_level_maxit = coarse_level_maxit
     self.coarse_level_tol = coarse_level_tol
 
-    if use_lobpcg_if_symmetric:
-      self.coarse_level_verb = coarse_level_verb
+    if use_lobpcg_on_coarse_level:
+      self.lobpcg_verb = lobpcg_verb
+
+      if precond_lobpcg_by_ml:
+        if not __py_amg_available__:
+          warning("PyAMG preconditioning is not be available.")
+          precond_lobpcg_by_ml = False
+
+      self.precond_lobpcg_by_ml = precond_lobpcg_by_ml
+      self.update_lobpcg_prec = update_lobpcg_prec
+      self.M = None
+
+      if not self.problem.sym:
+          warning("LOBPCG will be used for non-symmetric eigenproblem.")
 
       if self.coarse_level_tol == 0:
         self.coarse_level_tol = None
@@ -80,7 +101,18 @@ class EVC(object):
     else:
       self.coarse_level_num_ritz_vec = coarse_level_num_ritz_vec
 
+    # Total iterations counters
+    self.num_it_coarse = 0
+    self.num_it_fine = 0
+    self.num_it_fine_smoothing = 0
+    self.num_it = 0
+
   def get_coarse_level_extensions(self, M_fine):
+    if self.verbosity >= 3:
+      print0(pid+"    calculating coarse matrices extensions")
+
+    timer = Timer("Coarse matrices extensions")
+
     Mx_fun = Function(self.problem.V_fine)
     Mx_vec = Mx_fun.vector()
     M_fine.mult(self.vec_fine, Mx_vec)
@@ -102,8 +134,11 @@ class EVC(object):
 
     return xtMx, PtMtx, PtMx
 
-
   def update_coarse_level(self):
+    if self.verbosity >= 2:
+      print0(pid+"  Updating coarse level matrices")
+
+    timer = Timer("Coarse matrices update")
 
     # Get the coarse level extensions
     A11, A1j, Ai1 = self.get_coarse_level_extensions(self.A_fine)
@@ -135,9 +170,14 @@ class EVC(object):
         self.B_coarse[0,1:] = B1j[self.indofs]
         self.B_coarse[1:,0] = Bi1[self.indofs]
 
+  def solve_on_coarse_level(self):
 
-  def solve_at_coarse_level(self):
     if comm.rank == 0:
+      if self.verbosity >= 2:
+        print pid+"  Solving on coarse level"
+
+      timer = Timer("Coarse level solution")
+
       if self.problem.switch_matrices_on_coarse_level:
         A = self.B_coarse
         B = self.A_coarse
@@ -153,22 +193,39 @@ class EVC(object):
       self.v_coarse.fill(0.0)
       self.v_coarse[0] = 1.0
 
-      if self.problem.sym:
-        if self.use_lobpcg_if_sym:
-          w, v = lobpcg(A, self.v_coarse, B, tol=self.coarse_level_tol, maxiter=self.coarse_level_maxit,
-                        largest=largest, verbosityLevel=self.coarse_level_verb)
-        else:
+      if self.use_lobpcg_on_coarse_level:
+        if self.precond_lobpcg_by_ml:
+          if self.update_lobpcg_prec or self.M is None:
+            if self.verbosity >= 3:
+              print0(pid+"    Creating coarse level preconditioner")
+
+            ml = smoothed_aggregation_solver(A)
+            self.M = ml.aspreconditioner()
+
+        w, v, h = lobpcg(A, self.v_coarse, B, self.M, tol=self.coarse_level_tol, maxiter=self.coarse_level_maxit,
+                         largest=largest, verbosityLevel=self.lobpcg_verb, retResidualNormsHistory=True)
+      else:
+        if self.problem.sym:
           w, v = eigsh(A, 1, B, which=which, v0=self.v_coarse,
                        ncv=self.coarse_level_num_ritz_vec, maxiter=self.coarse_level_maxit, tol=self.coarse_level_tol)
-      else:
-        w, v = eigs(A, 1, B, which=which, v0=self.v_coarse,
-                    ncv=self.coarse_level_num_ritz_vec, maxiter=self.coarse_level_maxit, tol=self.coarse_level_tol)
+        else:
+          w, v = eigs(A, 1, B, which=which, v0=self.v_coarse,
+                      ncv=self.coarse_level_num_ritz_vec, maxiter=self.coarse_level_maxit, tol=self.coarse_level_tol)
 
       self.lam = w[0]
       self.v_coarse = v[0]
 
+      try:
+        self.num_it_coarse += len(h)
+      except NameError:
+        pass  # There seems to be no way to obtain number of iterations for eigs/eigsh
 
   def prolongate(self):
+    if self.verbosity >= 2:
+      print0(pid+"  Prolongating")
+
+    timer = Timer("Prolongating")
+
     if comm.rank == 0:
       self.v_coarse_with_all_dofs[self.indofs] = self.v_coarse[1:]
       # 0 Dirichlet BC are automatic by the initial setting in the constructor
@@ -186,38 +243,44 @@ class EVC(object):
     v1 = comm.bcast(self.v_coarse[0], root=0)
     self.vec_fine.axpy(v1, self.vec_fine)
 
-  def post_smooth(self, smooth_steps):
-    for i in xrange(smooth_steps):
+  def smooth_on_fine_level(self, smoothing_steps):
+    if self.verbosity >= 2:
+      print0(pid+"  Smoothing on fine level")
+
+    timer = Timer("Smoothing on fine level")
+
+    for i in xrange(smoothing_steps):
+      if self.verbosity >= 3:
+        print0(pid+"    iteration {}".format(i))
+
       if self.B_fine.size() > 0:
         b = self.B_fine.mult(self.vec_fine)
       else:
         b = self.vec_fine
 
-      self.fine_solver.solve(self.vec_fine, b)
+      self.num_it_fine += self.fine_solver.solve(self.vec_fine, b)
 
-  def eigenvalue_residual_norm(self, norm_type='l2'):
-    r = PETScVector()
+  def solve(self, max_it, res_norm_tol, smoothing_steps=None, norm_type='l2'):
+    self.num_it_coarse = 0
+    self.num_it_fine = 0
 
-    self.A_fine.mult(self.vec_fine, r)
+    if smoothing_steps is None:
+      smoothing_steps = self.problem.beta/2+1
 
-    if self.B_fine.size(0) > 0:
-      y = PETScVector()
-      self.B_fine.mult(self.vec_fine, y)
-    else:
-      y = 1
-
-    r -= self.lam*y
-
-    return norm(r,norm_type)
-
-  def solve(self, max_it, smooth_steps, res_norm_tol, norm_type='l2'):
     for i in xrange(max_it):
+      if self.verbosity >= 1:
+        print0(pid+"Iteration {}".format(i))
+
       self.update_coarse_level()
-      self.solve_at_coarse_level()
+      self.solve_on_coarse_level()
       self.prolongate()
-      self.post_smooth(smooth_steps)
+      self.smooth_on_fine_level(smoothing_steps)
 
       self.vec_fine *= 1./norm(self.vec_fine, norm_type)
 
-      if self.eigenvalue_residual_norm(norm_type) <= res_norm_tol:
+      if self.problem.residual_norm(norm_type) <= res_norm_tol:
+        self.num_it = i+1
         break
+
+    self.lam = self.problem.rayleigh_quotient(self.vec_fine)
+    self.num_it_fine_smoothing = self.num_it * smoothing_steps
