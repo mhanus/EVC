@@ -36,13 +36,15 @@ def composite_coo_on_zero(Apq, A11, A1j, Ai1, rows_glob=None, cols_glob=None, va
 
   timer = Timer("COO representation")
 
-  # Remove zeros of the main block if possible
+  # Remove zeros of the main block if possible; the original matrix will not be needed any further.
 
   try: # DOLFIN 1.3-
-    A = as_backend_type(Apq.copy().compress())
+    A = as_backend_type(Apq.compress())
   except:
     try:  # DOLFIN 1.4+
-      A = as_backend_type(Apq.copy().compressed())
+      A = PETScMatrix()
+      Apq.compressed(A)   # Here, Apq is required to actually call the method; result will go to `A`, but Apq will be
+                          # compressed too (using `Apq` as both a calling object and argument would cause a warning).
     except:
       A = Apq   # Don't compress
 
@@ -121,17 +123,16 @@ def composite_coo_on_zero(Apq, A11, A1j, Ai1, rows_glob=None, cols_glob=None, va
 
   return rows_glob, cols_glob, vals_glob
 
-def condense_matrix(A, bc):
+def split_dofs(bc, N):
   """
-  Condense the input matrix to inner dofs.
+  Get lists of boundary and inner dofs corresponding to given Dirichlet BCs.
 
-  :param scipy.sparse.csr_matrix A: (in/out) Matrix to be condensed.
-  :param DirichletBC bc: (in) Dolfin object representing the zero Dirichlet BC.
-  :return: rank 0: the condensed matrix, indices of inner and boundary dofs in the original matrix.
+  :param DirichletBC bc: Dolfin object representing the zero Dirichlet BC.
+  :param int N: Total number of dof.
+  :return: rank 0: indices of inner and boundary dofs
            rank 1,2,...: None objects
-  :rtype: (scipy.sparse.csr_matrix, ndarray, ndarray) | (None, None, None)
+  :rtype: (ndarray, ndarray) | (None, None)
   """
-
   bcdofs_loc = numpy.fromiter( bc.get_boundary_values().iterkeys(), dtype=numpy.int32 )
   recv_counts = comm.allgather(bcdofs_loc.size)
 
@@ -147,14 +148,30 @@ def condense_matrix(A, bc):
                root=0)
 
   if comm.rank == 0:
-    alldofs = numpy.arange(A.shape[0], dtype=numpy.int32)
+    alldofs = numpy.arange(N, dtype=numpy.int32)
     indofs = numpy.setdiff1d(alldofs,bcdofs)
-    A = A[numpy.ix_(indofs, indofs)]
   else:
     indofs = None
-    A = None
 
-  return A, bcdofs, indofs
+  return bcdofs, indofs
+
+def condense_matrices(indofs, *mats):
+  """
+  Condense the input matrices to inner dofs.
+
+  :param Iterable[scipy.sparse.csr_matrix] mats: Matrices to be condensed (specified only on rank 0).
+  :param ndarray indofs: Array of inner dofs.
+  :return: rank 0: condensed matrices.
+           rank 1,2,...: None
+  :rtype: list[scipy.sparse.csr_matrix] | list[None]
+  """
+
+  if comm.rank == 0:
+    cmats = [ mat[numpy.ix_(indofs, indofs)] for mat in mats ]
+  else:
+    cmats = [ None for mat in mats ]
+
+  return cmats
 
 def create_composite_matrix(Apq, A11, A1j, Ai1):
   """

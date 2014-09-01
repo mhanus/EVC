@@ -1,3 +1,5 @@
+import numpy
+
 __author__ = 'mhanus'
 
 import os
@@ -6,7 +8,7 @@ from dolfin.cpp.common import dolfin_version
 #
 # MPI
 #
-from mpi4py.MPI import __TypeDict__, COMM_WORLD
+from mpi4py.MPI import __TypeDict__, COMM_WORLD, SUM
 
 MPI_type = lambda array: __TypeDict__[array.dtype.char]
 comm = COMM_WORLD
@@ -15,6 +17,24 @@ pid = "Process " + str(comm.rank) + ": " if comm.size > 1 else ""
 def print0(x, end="\n", _comm=COMM_WORLD):
   if _comm.rank == 0:
     print str(x)+end,
+
+def MPI_sum0(arg,ax=None):
+  if ax:
+    r = numpy.atleast_1d(numpy.sum(arg,ax))
+  else:
+    r = numpy.atleast_1d(numpy.sum(arg))
+
+  if comm.rank == 0:
+    rout = numpy.zeros_like(r)
+  else:
+    rout = None
+
+  comm.Reduce([r, MPI_type(r)], [rout, MPI_type(rout)], op=SUM, root=0)
+
+  if rout.size == 1:
+    return rout[0]
+  else:
+    return rout
 
 
 #
